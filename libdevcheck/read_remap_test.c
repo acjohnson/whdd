@@ -30,13 +30,45 @@ struct read_remap_priv {
     uint64_t current_lba;
     const char *remap_enable_str;
     int64_t remap_timeout_ms;
+    const char *remap_on_errors_str;
     int remap_enable;
+    int remap_on_errors_mode;
     uint64_t remapped_count;
 };
 typedef struct read_remap_priv ReadRemapPriv;
 
 #define SECTORS_AT_ONCE 256
 #define BLK_SIZE (SECTORS_AT_ONCE * 512) // FIXME hardcode
+
+// Error-based remapping modes
+#define REMAP_ERRORS_NONE 0
+#define REMAP_ERRORS_CRITICAL 1    // unc, amnf
+#define REMAP_ERRORS_AGGRESSIVE 2  // unc, amnf, abrt
+#define REMAP_ERRORS_ALL 3         // any error
+
+// Function to check if an error should trigger remapping based on mode
+static int should_remap_on_error(DC_BlockStatus error_status, int remap_mode) {
+    switch (remap_mode) {
+        case REMAP_ERRORS_NONE:
+            return 0; // Never remap on errors
+
+        case REMAP_ERRORS_CRITICAL:
+            return (error_status == DC_BlockStatus_eUnc ||
+                    error_status == DC_BlockStatus_eAmnf);
+
+        case REMAP_ERRORS_AGGRESSIVE:
+            return (error_status == DC_BlockStatus_eUnc ||
+                    error_status == DC_BlockStatus_eAmnf ||
+                    error_status == DC_BlockStatus_eAbrt);
+
+        case REMAP_ERRORS_ALL:
+            return (error_status != DC_BlockStatus_eOk &&
+                    error_status != DC_BlockStatus_eRemapped);
+
+        default:
+            return 0;
+    }
+}
 
 // Function to remap sector using hdparm
 static int hdparm_remap_sector(uint64_t lba, const char* device_path) {
@@ -100,6 +132,8 @@ static int SuggestDefaultValue(DC_Dev *dev, DC_OptionSetting *setting) {
         setting->value = strdup("yes");
     } else if (!strcmp(setting->name, "remap_timeout_ms")) {
         setting->value = strdup("5000");
+    } else if (!strcmp(setting->name, "remap_on_errors")) {
+        setting->value = strdup("critical");
     } else {
         return 1;
     }
@@ -126,6 +160,19 @@ static int Open(DC_ProcedureCtx *ctx) {
         priv->remap_enable = 1;
     } else {
         priv->remap_enable = 0;
+    }
+
+    // Parse remap on errors option
+    if (!strcmp(priv->remap_on_errors_str, "none")) {
+        priv->remap_on_errors_mode = REMAP_ERRORS_NONE;
+    } else if (!strcmp(priv->remap_on_errors_str, "critical")) {
+        priv->remap_on_errors_mode = REMAP_ERRORS_CRITICAL;
+    } else if (!strcmp(priv->remap_on_errors_str, "aggressive")) {
+        priv->remap_on_errors_mode = REMAP_ERRORS_AGGRESSIVE;
+    } else if (!strcmp(priv->remap_on_errors_str, "all")) {
+        priv->remap_on_errors_mode = REMAP_ERRORS_ALL;
+    } else {
+        priv->remap_on_errors_mode = REMAP_ERRORS_CRITICAL; // default
     }
 
     ctx->blk_size = BLK_SIZE;
@@ -226,20 +273,62 @@ static int Perform(DC_ProcedureCtx *ctx) {
     priv->lba_to_process -= sectors_to_read;
     priv->current_lba += sectors_to_read;
 
-    // Check if remapping is enabled and sector is slow
-    if (priv->remap_enable && ctx->report.blk_status == DC_BlockStatus_eOk) {
-        uint64_t timeout_threshold_us = priv->remap_timeout_ms * 1000; // Convert ms to microseconds
-        if (ctx->report.blk_access_time > timeout_threshold_us) {
-            dc_log(DC_LOG_DEBUG, "Sector at LBA %"PRIu64" is slow (%"PRIu64" ms), attempting remap\n",
-                   ctx->report.lba, ctx->report.blk_access_time / 1000);
+    // Check for remapping conditions if remapping is enabled
+    if (priv->remap_enable) {
+        int should_remap = 0;
+        const char *remap_reason = "";
+
+        // Check timeout-based remapping (only for successful reads)
+        if (ctx->report.blk_status == DC_BlockStatus_eOk) {
+            uint64_t timeout_threshold_us = priv->remap_timeout_ms * 1000; // Convert ms to microseconds
+            if (ctx->report.blk_access_time > timeout_threshold_us) {
+                should_remap = 1;
+                remap_reason = "slow sector";
+            }
+        }
+
+        // Check error-based remapping (for any error status)
+        if (!should_remap && should_remap_on_error(ctx->report.blk_status, priv->remap_on_errors_mode)) {
+            should_remap = 1;
+            switch (ctx->report.blk_status) {
+                case DC_BlockStatus_eUnc:
+                    remap_reason = "uncorrectable data error";
+                    break;
+                case DC_BlockStatus_eAmnf:
+                    remap_reason = "address mark not found";
+                    break;
+                case DC_BlockStatus_eAbrt:
+                    remap_reason = "command aborted";
+                    break;
+                case DC_BlockStatus_eIdnf:
+                    remap_reason = "ID not found";
+                    break;
+                case DC_BlockStatus_eTimeout:
+                    remap_reason = "command timeout";
+                    break;
+                default:
+                    remap_reason = "error condition";
+                    break;
+            }
+        }
+
+        // Perform remapping if conditions are met
+        if (should_remap) {
+            if (strcmp(remap_reason, "slow sector") == 0) {
+                dc_log(DC_LOG_DEBUG, "Sector at LBA %"PRIu64" is slow (%"PRIu64" ms), attempting remap\n",
+                       ctx->report.lba, ctx->report.blk_access_time / 1000);
+            } else {
+                dc_log(DC_LOG_DEBUG, "Sector at LBA %"PRIu64" has %s, attempting remap\n",
+                       ctx->report.lba, remap_reason);
+            }
 
             if (hdparm_remap_sector(ctx->report.lba, ctx->dev->dev_path) == 0) {
                 priv->remapped_count++;
                 ctx->report.blk_status = DC_BlockStatus_eRemapped; // Mark as remapped
-                dc_log(DC_LOG_DEBUG, "Successfully remapped sector %"PRIu64" (total remapped: %"PRIu64")\n",
-                       ctx->report.lba, priv->remapped_count);
+                dc_log(DC_LOG_DEBUG, "Successfully remapped sector %"PRIu64" due to %s (total remapped: %"PRIu64")\n",
+                       ctx->report.lba, remap_reason, priv->remapped_count);
             } else {
-                dc_log(DC_LOG_ERROR, "Failed to remap sector %"PRIu64"\n", ctx->report.lba);
+                dc_log(DC_LOG_ERROR, "Failed to remap sector %"PRIu64" (reason: %s)\n", ctx->report.lba, remap_reason);
             }
         }
     }
@@ -263,11 +352,13 @@ static void Close(DC_ProcedureCtx *ctx) {
 
 static const char * const api_choices[] = {"ata", "posix", NULL};
 static const char * const remap_enable_choices[] = {"yes", "no", NULL};
+static const char * const remap_on_errors_choices[] = {"none", "critical", "aggressive", "all", NULL};
 static DC_ProcedureOption options[] = {
     { "api", "select operation API: \"posix\" for POSIX read(), \"ata\" for ATA \"READ VERIFY EXT\" command", offsetof(ReadRemapPriv, api_str), DC_ProcedureOptionType_eString, api_choices },
     { "start_lba", "set LBA address to begin from", offsetof(ReadRemapPriv, start_lba), DC_ProcedureOptionType_eInt64 },
     { "remap_enable", "enable automatic sector remapping for slow sectors?", offsetof(ReadRemapPriv, remap_enable_str), DC_ProcedureOptionType_eString, remap_enable_choices },
     { "remap_timeout_ms", "timeout threshold in milliseconds to trigger remap (only used if remapping enabled)", offsetof(ReadRemapPriv, remap_timeout_ms), DC_ProcedureOptionType_eInt64 },
+    { "remap_on_errors", "remap sectors with specific error types: \"none\" (timeout only), \"critical\" (unc,amnf), \"aggressive\" (unc,amnf,abrt), \"all\" (any error)", offsetof(ReadRemapPriv, remap_on_errors_str), DC_ProcedureOptionType_eString, remap_on_errors_choices },
     { NULL }
 };
 

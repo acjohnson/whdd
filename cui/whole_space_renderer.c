@@ -402,7 +402,9 @@ static int Open(DC_RendererCtx *ctx) {
             uint64_t current_lba;
             const char *remap_enable_str;
             int64_t remap_timeout_ms;
+            const char *remap_on_errors_str;
             int remap_enable;
+            int remap_on_errors_mode;
             uint64_t remapped_count;
         } ReadRemapPriv;
 
