@@ -10,6 +10,8 @@
 #include "procedure.h"
 #include "vis.h"
 #include "copy.h"
+#include "ata.h"
+#include "scsi.h"
 
 #define LEGEND_WIDTH 20
 
@@ -34,7 +36,7 @@ typedef struct {
 
     struct timespec start_time;
     uint64_t access_time_stats_accum[6];
-    uint64_t error_stats_accum[8]; // 0th is unused, the rest are as in DC_BlockStatus enum (updated for eRemapped)
+    uint64_t error_stats_accum[DC_BlockStatus_COUNT]; // Use enum count instead of magic number
     uint64_t bytes_processed;
     uint64_t avg_processing_speed;
     uint64_t eta_time; // estimated time
@@ -214,7 +216,7 @@ static void render_update_stats(WholeSpace *priv) {
     wattrset(priv->w_stats, A_NORMAL);
     wprintw(priv->w_stats, " %"PRIu64"\n", priv->errors_count);
 
-    print_vis(priv->w_stats, error_vis[7]); // remapped indicator (index 7 = DC_BlockStatus_eRemapped)
+    print_vis(priv->w_stats, error_vis[DC_BlockStatus_eRemapped]); // Use enum instead of magic index
     wattrset(priv->w_stats, A_NORMAL);
     wprintw(priv->w_stats, " %"PRIu64"\n", priv->remapped_count);
 
@@ -235,9 +237,9 @@ void whole_space_show_legend(WholeSpace *priv) {
     wattrset(win, A_NORMAL);
     wprintw(win, " read errors\n  occured\n");
 
-    print_vis(win, error_vis[7]); // remapped indicator
+    print_vis(win, error_vis[DC_BlockStatus_eRemapped]); // Use enum instead of magic index
     wattrset(win, A_NORMAL);
-    wprintw(win, " sectors\n  remapped\n");
+    wprintw(win, " remap\n");
 
     wprintw(win, "Display block is %"PRId64" blocks by %d sectors\n",
             priv->blocks_per_vis, priv->sectors_per_block);
@@ -351,7 +353,7 @@ static int Open(DC_RendererCtx *ctx) {
     assert(priv->legend);
     wbkgd(priv->legend, COLOR_PAIR(MY_COLOR_GRAY));
 
-#define W_STATS_HEIGHT 3
+#define W_STATS_HEIGHT 4
 #define W_STATS_VERT_OFFSET ( LEGEND_VERT_OFFSET + LEGEND_HEIGHT + 1 /* spacing */ )
     priv->w_stats = derwin(stdscr, W_STATS_HEIGHT, LEGEND_WIDTH, W_STATS_VERT_OFFSET, COLS-LEGEND_WIDTH);
     assert(priv->w_stats);
@@ -380,10 +382,44 @@ static int Open(DC_RendererCtx *ctx) {
     comma_lba_p = commaprint(actctx->dev->capacity / 512, comma_lba_buf, sizeof(comma_lba_buf));
     wprintw(priv->w_end_lba, "/ %s", comma_lba_p);
     wnoutrefresh(priv->w_end_lba);
-    wprintw(priv->summary,
-            "%s %s\n"
-            "Ctrl+C to abort\n",
-            actctx->procedure->display_name, actctx->dev->dev_path);
+    // Check if this is a remapping procedure and display timeout if so
+    int show_remap = dc_procedure_supports_remapping(actctx->procedure->name);
+    if (show_remap) {
+        // For remapping procedures, display the timeout setting
+        // Access the timeout from the procedure's private data
+        // Note: Need to include the actual struct sizes for proper alignment
+        typedef struct {
+            const char *api_str;
+            int64_t start_lba;
+            enum Api api;
+            int64_t end_lba;
+            int64_t lba_to_process;
+            int fd;
+            void *buf;
+            char ata_command[sizeof(AtaCommand)]; // Full struct size
+            char scsi_command[sizeof(ScsiCommand)]; // Full struct size
+            int old_readahead;
+            uint64_t current_lba;
+            const char *remap_enable_str;
+            int64_t remap_timeout_ms;
+            int remap_enable;
+            uint64_t remapped_count;
+        } ReadRemapPriv;
+
+        ReadRemapPriv *remap_priv = (ReadRemapPriv*)actctx->priv;
+
+        wprintw(priv->summary,
+                "%s %s\n"
+                "Remap timeout = %" PRId64 " ms\n"
+                "Ctrl+C to abort\n",
+                actctx->procedure->display_name, actctx->dev->dev_path,
+                remap_priv->remap_timeout_ms);
+    } else {
+        wprintw(priv->summary,
+                "%s %s\n"
+                "Ctrl+C to abort\n",
+                actctx->procedure->display_name, actctx->dev->dev_path);
+    }
     wrefresh(priv->summary);
     int r = pthread_create(&priv->render_thread, NULL, render_thread_proc, priv);
     if (r)

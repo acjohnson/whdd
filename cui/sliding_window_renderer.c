@@ -9,6 +9,8 @@
 #include "ncurses_convenience.h"
 #include "procedure.h"
 #include "vis.h"
+#include "ata.h"
+#include "scsi.h"
 
 typedef struct blk_report {
     uint64_t seqno;
@@ -29,11 +31,12 @@ typedef struct {
 
     struct timespec start_time;
     uint64_t access_time_stats_accum[7];
-    uint64_t error_stats_accum[8]; // 0th is unused, the rest are as in DC_BlockStatus enum (updated for eRemapped)
+    uint64_t error_stats_accum[DC_BlockStatus_COUNT]; // Use enum count instead of magic number
     uint64_t bytes_processed;
     uint64_t avg_processing_speed;
     uint64_t eta_time; // estimated time
     uint64_t cur_lba;
+    int show_remap_stats; // Whether to show remapped sector statistics
 
     pthread_t render_thread;
     int order_hangup; // if interrupted or completed, render remainings and end render thread
@@ -132,8 +135,12 @@ static void render_update_stats(SlidingWindow *priv) {
     unsigned int i;
     for (i = 0; i < 6; i++)
         wprintw(priv->access_time_stats, "%" PRIu64 "\n", priv->access_time_stats_accum[i]);
-    for (i = 1; i < 8; i++)  // Updated to include eRemapped (index 7)
+
+    // Show error stats, conditionally including remapped count
+    unsigned int max_error_index = priv->show_remap_stats ? DC_BlockStatus_COUNT : DC_BlockStatus_eRemapped;
+    for (i = 1; i < max_error_index; i++)
         wprintw(priv->access_time_stats, "%" PRIu64 "\n", priv->error_stats_accum[i]);
+
     wnoutrefresh(priv->access_time_stats);
 
     if (priv->avg_processing_speed != 0) {
@@ -200,7 +207,7 @@ static int Open(DC_RendererCtx *ctx) {
 
 #define LBA_WIDTH 20
 #define LEGEND_WIDTH 20
-#define LEGEND_HEIGHT 12
+#define LEGEND_HEIGHT 13
 #define LEGEND_VERT_OFFSET 3 /* ETA & SPEED are above, 1 for spacing */
 
     priv->w_cur_lba = derwin(stdscr, 1, LBA_WIDTH, 0 /* at the top */, COLS - LEGEND_WIDTH - 1 - (LBA_WIDTH * 2) );
@@ -226,7 +233,10 @@ static int Open(DC_RendererCtx *ctx) {
     priv->access_time_stats = derwin(stdscr, LEGEND_HEIGHT, LEGEND_WIDTH/2, LEGEND_VERT_OFFSET, COLS-LEGEND_WIDTH/2);
     assert(priv->access_time_stats);
     wbkgd(priv->access_time_stats, COLOR_PAIR(MY_COLOR_GRAY));
-    show_legend(priv->legend);
+    // Show remap legend and stats only for procedures that support remapping
+    int show_remap = dc_procedure_supports_remapping(actctx->procedure->name);
+    priv->show_remap_stats = show_remap;
+    show_legend(priv->legend, show_remap);
 
 #define SUMMARY_VERT_OFFSET ( 1 /* ETA */ + 1 + /* SPEED */ + 1 /* spacing */ + LEGEND_HEIGHT + 1 /* spacing */ )
 #define SUMMARY_HEIGHT ( LINES - SUMMARY_VERT_OFFSET - 1 /* don't touch bottom line */ )
@@ -245,11 +255,44 @@ static int Open(DC_RendererCtx *ctx) {
     comma_lba_p = commaprint(actctx->dev->capacity / 512, comma_lba_buf, sizeof(comma_lba_buf));
     wprintw(priv->w_end_lba, "/ %s", comma_lba_p);
     wnoutrefresh(priv->w_end_lba);
-    wprintw(priv->summary,
-            "%s %s\n"
-            "Block = %" PRIu64 " bytes\n"
-            "Ctrl+C to abort\n",
-            actctx->procedure->display_name, actctx->dev->dev_path, actctx->blk_size);
+    if (show_remap) {
+        // For remapping procedures, display the timeout setting
+        // Access the timeout from the procedure's private data
+        // Note: Need to include the actual struct sizes for proper alignment
+        typedef struct {
+            const char *api_str;
+            int64_t start_lba;
+            enum Api api;
+            int64_t end_lba;
+            int64_t lba_to_process;
+            int fd;
+            void *buf;
+            char ata_command[sizeof(AtaCommand)]; // Full struct size
+            char scsi_command[sizeof(ScsiCommand)]; // Full struct size
+            int old_readahead;
+            uint64_t current_lba;
+            const char *remap_enable_str;
+            int64_t remap_timeout_ms;
+            int remap_enable;
+            uint64_t remapped_count;
+        } ReadRemapPriv;
+
+        ReadRemapPriv *remap_priv = (ReadRemapPriv*)actctx->priv;
+
+        wprintw(priv->summary,
+                "%s %s\n"
+                "Block = %" PRIu64 " bytes\n"
+                "Remap timeout = %" PRId64 " ms\n"
+                "Ctrl+C to abort\n",
+                actctx->procedure->display_name, actctx->dev->dev_path, actctx->blk_size,
+                remap_priv->remap_timeout_ms);
+    } else {
+        wprintw(priv->summary,
+                "%s %s\n"
+                "Block = %" PRIu64 " bytes\n"
+                "Ctrl+C to abort\n",
+                actctx->procedure->display_name, actctx->dev->dev_path, actctx->blk_size);
+    }
     wrefresh(priv->summary);
     int r = pthread_create(&priv->render_thread, NULL, render_thread_proc, priv);
     if (r)

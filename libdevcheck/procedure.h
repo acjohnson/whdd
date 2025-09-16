@@ -5,6 +5,7 @@
 #include "device.h"
 #include <pthread.h>
 #include <stddef.h>
+#include <string.h>
 
 #define DC_PROC_FLAG_INVASIVE 1
 #define DC_PROC_FLAG_REQUIRES_ATA 2
@@ -68,7 +69,13 @@ typedef enum {
     DC_BlockStatus_eAbrt,
     DC_BlockStatus_eAmnf,
     DC_BlockStatus_eRemapped, // Sector was remapped
+    DC_BlockStatus_COUNT      // Total count of status types
 } DC_BlockStatus;
+
+// Helper function to check if a procedure supports remapping
+static inline int dc_procedure_supports_remapping(const char *procedure_name) {
+    return strcmp(procedure_name, "read_remap_test") == 0;
+}
 
 typedef struct dc_block_report {
     uint64_t lba;  // block start lba

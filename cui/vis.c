@@ -1,5 +1,6 @@
 #include <inttypes.h>
 #include "vis.h"
+#include "procedure.h"
 
 vis_t bs_vis[]   = {
                     { 3000,   L'\u2588', 0, MY_COLOR_BLUE }, // blue block
@@ -19,7 +20,7 @@ vis_t error_vis[]= {
                     { 0,      L'A',      0, MY_COLOR_ORANGE }, // eAmnf
                     { 0,      L'R',      1, MY_COLOR_CYAN }, // eRemapped
 };
-vis_t remapped_vis = { 0,      L'R',      1, MY_COLOR_CYAN }; // Remapped sector indicator
+// Note: remapped_vis removed - use error_vis[DC_BlockStatus_eRemapped] instead
 void init_my_colors(void) {
     init_pair(MY_COLOR_GRAY, COLOR_WHITE, COLOR_BLACK);
     init_pair(MY_COLOR_GREEN, COLOR_GREEN, COLOR_BLACK);
@@ -49,7 +50,7 @@ void print_vis(WINDOW *win, vis_t vis) {
     wprintw(win, "%lc", vis.vis);
 }
 
-void show_legend(WINDOW *win) {
+void show_legend(WINDOW *win, int show_remap) {
     unsigned int i;
     for (i = 0; i < sizeof(bs_vis)/sizeof(*bs_vis); i++) {
         print_vis(win, bs_vis[i]);
@@ -84,9 +85,11 @@ void show_legend(WINDOW *win) {
     wattrset(win, A_NORMAL);
     wprintw(win, " AMNF\n");
 
-    print_vis(win, remapped_vis);
-    wattrset(win, A_NORMAL);
-    wprintw(win, " REMAP\n");
+    if (show_remap) {
+        print_vis(win, error_vis[DC_BlockStatus_eRemapped]);
+        wattrset(win, A_NORMAL);
+        wprintw(win, " REMAP\n");
+    }
 
     wrefresh(win);
 }

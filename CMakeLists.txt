@@ -27,6 +27,7 @@ set(LIBDEVCHECK_SRCS
     libdevcheck/procedure.c
     libdevcheck/libdevcheck.c
     libdevcheck/read_test.c
+    libdevcheck/read_remap_test.c
     libdevcheck/utils.c
     libdevcheck/posix_write_zeros.c
     libdevcheck/log.c
