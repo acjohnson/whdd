@@ -187,4 +187,3 @@ DC_Procedure read_test = {
     .priv_data_size = sizeof(ReadPriv),
     .options = options,
 };
-

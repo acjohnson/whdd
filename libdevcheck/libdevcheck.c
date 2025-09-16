@@ -51,6 +51,7 @@ int dc_init(void) {
     PROCEDURE_REGISTER(posix_write_zeros);
     PROCEDURE_REGISTER(copy);
     PROCEDURE_REGISTER(read_test);
+    PROCEDURE_REGISTER(read_remap_test);
     PROCEDURE_REGISTER(smart_show);
 #undef PROCEDURE_REGISTER
     return 0;

@@ -29,7 +29,7 @@ typedef struct {
 
     struct timespec start_time;
     uint64_t access_time_stats_accum[7];
-    uint64_t error_stats_accum[7]; // 0th is unused, the rest are as in DC_BlockStatus enum
+    uint64_t error_stats_accum[8]; // 0th is unused, the rest are as in DC_BlockStatus enum (updated for eRemapped)
     uint64_t bytes_processed;
     uint64_t avg_processing_speed;
     uint64_t eta_time; // estimated time
@@ -132,7 +132,7 @@ static void render_update_stats(SlidingWindow *priv) {
     unsigned int i;
     for (i = 0; i < 6; i++)
         wprintw(priv->access_time_stats, "%" PRIu64 "\n", priv->access_time_stats_accum[i]);
-    for (i = 1; i < 7; i++)
+    for (i = 1; i < 8; i++)  // Updated to include eRemapped (index 7)
         wprintw(priv->access_time_stats, "%" PRIu64 "\n", priv->error_stats_accum[i]);
     wnoutrefresh(priv->access_time_stats);
 

@@ -67,6 +67,7 @@ typedef enum {
     DC_BlockStatus_eIdnf,
     DC_BlockStatus_eAbrt,
     DC_BlockStatus_eAmnf,
+    DC_BlockStatus_eRemapped, // Sector was remapped
 } DC_BlockStatus;
 
 typedef struct dc_block_report {

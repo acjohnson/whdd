@@ -13,6 +13,7 @@
 #define MY_COLOR_ORANGE 45
 #define MY_COLOR_BLUE 46
 #define MY_COLOR_YELLOW 47
+#define MY_COLOR_CYAN 48
 
 typedef struct vis_t {
     uint64_t access_time; // in mcs
@@ -24,6 +25,7 @@ typedef struct vis_t {
 extern vis_t bs_vis[];
 extern vis_t exceed_vis;
 extern vis_t error_vis[]; // 0th is unused, rest go as in enum
+extern vis_t remapped_vis; // Visual indicator for remapped sectors
 
 void init_my_colors(void);
 vis_t choose_vis(uint64_t access_time);

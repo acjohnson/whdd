@@ -34,7 +34,7 @@ typedef struct {
 
     struct timespec start_time;
     uint64_t access_time_stats_accum[6];
-    uint64_t error_stats_accum[6]; // 0th is unused, the rest are as in DC_BlockStatus enum
+    uint64_t error_stats_accum[8]; // 0th is unused, the rest are as in DC_BlockStatus enum (updated for eRemapped)
     uint64_t bytes_processed;
     uint64_t avg_processing_speed;
     uint64_t eta_time; // estimated time
@@ -43,6 +43,7 @@ typedef struct {
     uint64_t errors_count;  // This one is used, error_stats_accum is currently not
     uint64_t unread_count;
     uint64_t read_ok_count;
+    uint64_t remapped_count; // Count of remapped sectors
 
     pthread_t render_thread;
     int order_hangup; // if interrupted or completed, render remainings and end render thread
@@ -149,7 +150,13 @@ static void *render_thread_proc(void *arg) {
 
 static void update_blocks_info(WholeSpace *priv, blk_report_t *rep) {
     uint8_t *map_pointer = &priv->blocks_map[rep->report.lba / priv->sectors_per_block];
-    if (rep->report.blk_status)
+    if (rep->report.blk_status == DC_BlockStatus_eRemapped)
+    {
+        priv->error_stats_accum[rep->report.blk_status]++;
+        *map_pointer = 3;  // block processed with remap (different from error)
+        priv->remapped_count += rep->report.sectors_processed;
+    }
+    else if (rep->report.blk_status)
     {
         priv->error_stats_accum[rep->report.blk_status]++;
         *map_pointer = 2;  // block processed with failure result
@@ -207,6 +214,10 @@ static void render_update_stats(WholeSpace *priv) {
     wattrset(priv->w_stats, A_NORMAL);
     wprintw(priv->w_stats, " %"PRIu64"\n", priv->errors_count);
 
+    print_vis(priv->w_stats, error_vis[7]); // remapped indicator (index 7 = DC_BlockStatus_eRemapped)
+    wattrset(priv->w_stats, A_NORMAL);
+    wprintw(priv->w_stats, " %"PRIu64"\n", priv->remapped_count);
+
     wnoutrefresh(priv->w_stats);
 }
 
@@ -223,6 +234,10 @@ void whole_space_show_legend(WholeSpace *priv) {
     print_vis(win, error_vis[3]);
     wattrset(win, A_NORMAL);
     wprintw(win, " read errors\n  occured\n");
+
+    print_vis(win, error_vis[7]); // remapped indicator
+    wattrset(win, A_NORMAL);
+    wprintw(win, " sectors\n  remapped\n");
 
     wprintw(win, "Display block is %"PRId64" blocks by %d sectors\n",
             priv->blocks_per_vis, priv->sectors_per_block);
